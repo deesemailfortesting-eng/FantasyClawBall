@@ -1,0 +1,254 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OwnerStatus { active disabled }
+enum LeagueStatus { forming active completed cancelled }
+enum AgentStatus { active suspended offline }
+enum WalletType { agent league_vault matchup_escrow }
+enum PolicyStatus { active restricted frozen }
+enum MatchupStatus { scheduled escrow_pending escrow_funded finalized settled forfeit }
+enum EscrowStatus { pending funded released refunded forfeited }
+enum SettlementType { weekly_matchup season_prize refund }
+enum SettlementStatus { pending submitted confirmed failed }
+enum MessageType { trash_talk reaction result_comment announcement }
+enum Visibility { public owner_visible system }
+enum ModerationStatus { approved blocked flagged }
+enum LedgerEntryType { deposit buy_in_lock weekly_lock escrow_release refund prize_payout adjustment }
+enum Direction { credit debit }
+enum ReferenceType { league matchup escrow settlement manual }
+
+enum ProviderType { scripted openai anthropic }
+
+model Owner {
+  id             String      @id @default(cuid())
+  displayName    String      @map("display_name")
+  email          String?
+  telegramHandle String?     @map("telegram_handle")
+  status         OwnerStatus @default(active)
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+  agents         Agent[]
+
+  @@map("owners")
+}
+
+model League {
+  id               String       @id @default(cuid())
+  name             String
+  seasonLabel      String       @map("season_label")
+  maxAgents        Int          @map("max_agents")
+  buyInAmount      Decimal      @db.Decimal(10, 2) @map("buy_in_amount")
+  weeklyStakeAmount Decimal     @db.Decimal(10, 2) @map("weekly_stake_amount")
+  seasonWeeks      Int          @map("season_weeks")
+  status           LeagueStatus @default(forming)
+  rulesetVersion   String       @map("ruleset_version")
+  startsAt         DateTime     @map("starts_at")
+  endsAt           DateTime     @map("ends_at")
+  createdAt        DateTime     @default(now()) @map("created_at")
+  updatedAt        DateTime     @updatedAt @map("updated_at")
+  agents           Agent[]
+  wallets          Wallet[]
+  matchups         Matchup[]
+  escrows          Escrow[]
+  settlements      Settlement[]
+  messages         Message[]
+  ledgerEntries    LedgerEntry[]
+
+  @@map("leagues")
+}
+
+model Agent {
+  id                   String       @id @default(cuid())
+  ownerId              String       @map("owner_id")
+  leagueId             String       @map("league_id")
+  name                 String
+  personaPrompt        String       @map("persona_prompt")
+  tone                 String
+  providerType         ProviderType? @map("provider_type")
+  modelName            String?      @map("model_name")
+  status               AgentStatus  @default(offline)
+  seasonReserveBalance Decimal      @db.Decimal(10, 2) @default(0) @map("season_reserve_balance")
+  rivalryNotes         String?      @map("rivalry_notes")
+  createdAt            DateTime     @default(now()) @map("created_at")
+  updatedAt            DateTime     @updatedAt @map("updated_at")
+
+  owner             Owner         @relation(fields: [ownerId], references: [id])
+  league            League        @relation(fields: [leagueId], references: [id])
+  wallet            Wallet?
+  matchupsAsA       Matchup[]     @relation("AgentA")
+  matchupsAsB       Matchup[]     @relation("AgentB")
+  wonMatchups       Matchup[]     @relation("Winner")
+  messages          Message[]
+  ledgerEntries     LedgerEntry[]
+  policy            AgentPolicy?
+
+  @@map("agents")
+}
+
+model Wallet {
+  id               String       @id @default(cuid())
+  walletType       WalletType   @map("wallet_type")
+  agentId          String?      @unique @map("agent_id")
+  leagueId         String?      @map("league_id")
+  address          String?
+  chain            String?
+  assetSymbol      String       @map("asset_symbol")
+  availableBalance Decimal      @db.Decimal(10, 2) @default(0) @map("available_balance")
+  lockedBalance    Decimal      @db.Decimal(10, 2) @default(0) @map("locked_balance")
+  policyStatus     PolicyStatus @default(active) @map("policy_status")
+  createdAt        DateTime     @default(now()) @map("created_at")
+  updatedAt        DateTime     @updatedAt @map("updated_at")
+
+  agent          Agent?         @relation(fields: [agentId], references: [id])
+  league         League?        @relation(fields: [leagueId], references: [id])
+  ledgerEntries  LedgerEntry[]
+  escrowAsVault  Escrow[]       @relation("EscrowVaultWallet")
+  escrowAsAgentA Escrow[]       @relation("EscrowAgentAWallet")
+  escrowAsAgentB Escrow[]       @relation("EscrowAgentBWallet")
+  settlementsFrom Settlement[]  @relation("SettlementFromWallet")
+  settlementsTo   Settlement[]  @relation("SettlementToWallet")
+
+  @@index([leagueId])
+  @@map("wallets")
+}
+
+model Matchup {
+  id            String       @id @default(cuid())
+  leagueId      String       @map("league_id")
+  weekNumber    Int          @map("week_number")
+  agentAId      String       @map("agent_a_id")
+  agentBId      String       @map("agent_b_id")
+  agentAScore   Decimal?     @db.Decimal(10,2) @map("agent_a_score")
+  agentBScore   Decimal?     @db.Decimal(10,2) @map("agent_b_score")
+  winnerAgentId String?      @map("winner_agent_id")
+  status        MatchupStatus @default(scheduled)
+  escrowId      String?      @unique @map("escrow_id")
+  settlementId  String?      @unique @map("settlement_id")
+  resultSource  String?      @map("result_source")
+  createdAt     DateTime     @default(now()) @map("created_at")
+  updatedAt     DateTime     @updatedAt @map("updated_at")
+
+  league      League       @relation(fields: [leagueId], references: [id])
+  agentA      Agent        @relation("AgentA", fields: [agentAId], references: [id])
+  agentB      Agent        @relation("AgentB", fields: [agentBId], references: [id])
+  winner      Agent?       @relation("Winner", fields: [winnerAgentId], references: [id])
+  escrow      Escrow?
+  settlement  Settlement?
+  messages    Message[]
+
+  @@index([leagueId, weekNumber])
+  @@unique([leagueId, weekNumber, agentAId, agentBId])
+  @@map("matchups")
+}
+
+model Escrow {
+  id                 String       @id @default(cuid())
+  leagueId           String       @map("league_id")
+  matchupId          String       @unique @map("matchup_id")
+  escrowWalletId     String       @map("escrow_wallet_id")
+  agentAWalletId     String       @map("agent_a_wallet_id")
+  agentBWalletId     String       @map("agent_b_wallet_id")
+  stakeAmountPerSide Decimal      @db.Decimal(10,2) @map("stake_amount_per_side")
+  totalLockedAmount  Decimal      @db.Decimal(10,2) @map("total_locked_amount")
+  status             EscrowStatus @default(pending)
+  lockedAt           DateTime?    @map("locked_at")
+  releasedAt         DateTime?    @map("released_at")
+  createdAt          DateTime     @default(now()) @map("created_at")
+  updatedAt          DateTime     @updatedAt @map("updated_at")
+
+  league       League @relation(fields: [leagueId], references: [id])
+  matchup      Matchup @relation(fields: [matchupId], references: [id])
+  escrowWallet Wallet @relation("EscrowVaultWallet", fields: [escrowWalletId], references: [id])
+  agentAWallet Wallet @relation("EscrowAgentAWallet", fields: [agentAWalletId], references: [id])
+  agentBWallet Wallet @relation("EscrowAgentBWallet", fields: [agentBWalletId], references: [id])
+
+  @@map("escrows")
+}
+
+model Settlement {
+  id             String           @id @default(cuid())
+  leagueId       String           @map("league_id")
+  matchupId      String?          @unique @map("matchup_id")
+  settlementType SettlementType   @map("settlement_type")
+  winnerAgentId  String?          @map("winner_agent_id")
+  fromWalletId   String?          @map("from_wallet_id")
+  toWalletId     String?          @map("to_wallet_id")
+  amount         Decimal          @db.Decimal(10,2)
+  status         SettlementStatus @default(pending)
+  idempotencyKey String           @unique @map("idempotency_key")
+  txHash         String?          @map("tx_hash")
+  triggerSource  String           @map("trigger_source")
+  createdAt      DateTime         @default(now()) @map("created_at")
+  updatedAt      DateTime         @updatedAt @map("updated_at")
+
+  league     League   @relation(fields: [leagueId], references: [id])
+  matchup    Matchup?
+  fromWallet Wallet?  @relation("SettlementFromWallet", fields: [fromWalletId], references: [id])
+  toWallet   Wallet?  @relation("SettlementToWallet", fields: [toWalletId], references: [id])
+
+  @@map("settlements")
+}
+
+model Message {
+  id               String           @id @default(cuid())
+  leagueId         String           @map("league_id")
+  agentId          String           @map("agent_id")
+  matchupId        String?          @map("matchup_id")
+  weekNumber       Int?             @map("week_number")
+  channelName      String           @map("channel_name")
+  messageType      MessageType      @map("message_type")
+  content          String
+  visibility       Visibility
+  moderationStatus ModerationStatus @map("moderation_status")
+  postedAt         DateTime         @default(now()) @map("posted_at")
+  createdAt        DateTime         @default(now()) @map("created_at")
+
+  league  League   @relation(fields: [leagueId], references: [id])
+  agent   Agent    @relation(fields: [agentId], references: [id])
+  matchup Matchup? @relation(fields: [matchupId], references: [id])
+
+  @@map("messages")
+}
+
+model LedgerEntry {
+  id            String          @id @default(cuid())
+  leagueId      String?         @map("league_id")
+  agentId       String?         @map("agent_id")
+  walletId      String          @map("wallet_id")
+  entryType     LedgerEntryType @map("entry_type")
+  direction     Direction
+  amount        Decimal         @db.Decimal(10,2)
+  referenceType ReferenceType   @map("reference_type")
+  referenceId   String?         @map("reference_id")
+  description   String
+  createdAt     DateTime        @default(now()) @map("created_at")
+
+  league League? @relation(fields: [leagueId], references: [id])
+  agent  Agent?  @relation(fields: [agentId], references: [id])
+  wallet Wallet  @relation(fields: [walletId], references: [id])
+
+  @@index([walletId, createdAt])
+  @@map("ledger_entries")
+}
+
+model AgentPolicy {
+  id                          String      @id @default(cuid())
+  agentId                     String      @unique @map("agent_id")
+  maxWeeklyStake              Decimal     @db.Decimal(10,2) @map("max_weekly_stake")
+  canSendDiscretionaryPayments Boolean    @default(false) @map("can_send_discretionary_payments")
+  canPostPublicMessages       Boolean     @default(true) @map("can_post_public_messages")
+  messageRateLimitPerHour     Int         @default(20) @map("message_rate_limit_per_hour")
+  status                      PolicyStatus
+  createdAt                   DateTime    @default(now()) @map("created_at")
+  updatedAt                   DateTime    @updatedAt @map("updated_at")
+
+  agent Agent @relation(fields: [agentId], references: [id])
+
+  @@map("agent_policies")
+}
